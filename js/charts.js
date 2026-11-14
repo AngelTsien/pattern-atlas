@@ -15,7 +15,7 @@
     sep: "rgba(215, 177, 106, 0.9)",
   };
 
-  const MAX_MOUNTED = 14;
+  const MAX_MOUNTED = 36;
   const mounted = [];
   let io = null;
   const watched = new Set();
@@ -31,12 +31,18 @@
     return io;
   }
 
+  function isInView(el) {
+    if (!el || !el.getBoundingClientRect) return false;
+    const r = el.getBoundingClientRect();
+    const vh = window.innerHeight || 800;
+    return r.width > 0 && r.height > 0 && r.bottom > -80 && r.top < vh + 80;
+  }
+
   function evictIfNeeded(keep) {
     if (mounted.length < MAX_MOUNTED) return;
-    const evict = mounted.filter((el) => el !== keep && !el._isIntersecting);
-    const victims = evict.length ? evict : mounted.filter((el) => el !== keep);
-    while (mounted.length >= MAX_MOUNTED && victims.length) {
-      unmountEl(victims.shift());
+    const evict = mounted.filter((el) => el !== keep && !isInView(el) && !el._isIntersecting);
+    while (mounted.length >= MAX_MOUNTED && evict.length) {
+      unmountEl(evict.shift());
     }
   }
 
@@ -199,14 +205,14 @@
     host.appendChild(tag);
   }
 
-  function attachSeparator(chart, host, time) {
+  function attachSeparator(chart, host, time, labelText) {
     const line = document.createElement("div");
     line.className = "chart-sep";
     line.setAttribute("aria-hidden", "true");
     host.appendChild(line);
     const label = document.createElement("div");
     label.className = "chart-sep-label";
-    label.textContent = "此后";
+    label.textContent = labelText || "此后";
     host.appendChild(label);
     function place() {
       try {
@@ -254,7 +260,8 @@
       follow = Atlas.rebaseToAnchor(follow, anchor);
     }
     const hasFollow = follow.length > 0;
-    const useBD = decideBusinessDay([pattern, follow]);
+    const alignIndex = !!(opts && opts.alignIndex);
+    const useBD = alignIndex ? false : decideBusinessDay([pattern, follow]);
     if (opts && opts.pricePercent) {
       chart.applyOptions({
         localization: {
@@ -267,6 +274,43 @@
         },
       });
     }
+    const INDEX_EPOCH = 1700000000;
+    const INDEX_STEP = 86400;
+    if (alignIndex) {
+      const n = pattern.length;
+      const padN = ((opts && opts.padAfter) || 0) + follow.length;
+      const patT = [];
+      for (let i = 0; i < n; i++) patT.push(INDEX_EPOCH + i * INDEX_STEP);
+      const folT = [];
+      for (let i = 0; i < follow.length; i++) folT.push(INDEX_EPOCH + (n + i) * INDEX_STEP);
+      if (n) pattern = Atlas.retargetTimes(pattern, patT);
+      if (follow.length) follow = Atlas.retargetTimes(follow, folT);
+      chart.applyOptions({
+        localization: Object.assign({}, (opts && opts.pricePercent) ? {
+          locale: "zh-CN",
+          priceFormatter: (v) => {
+            const num = Number(v);
+            const s = num.toFixed(Math.abs(num) >= 10 ? 1 : 2);
+            return (num > 0 ? "+" : "") + s + "%";
+          },
+        } : { locale: "zh-CN" }, {
+          timeFormatter: (time) => {
+            const idx = Math.round((time - INDEX_EPOCH) / INDEX_STEP) - (n - 1);
+            if (idx === 0) return "0";
+            return (idx > 0 ? "+" : "") + idx;
+          },
+        }),
+        timeScale: {
+          timeVisible: true,
+          tickMarkFormatter: (time) => {
+            const idx = Math.round((time - INDEX_EPOCH) / INDEX_STEP) - (n - 1);
+            if (idx === 0) return "0";
+            return (idx > 0 ? "+" : "") + idx;
+          },
+        },
+      });
+    }
+
     const palPat = (opts && opts.currentOnly)
       ? { up: COLORS.up, down: COLORS.down }
       : { up: COLORS.cyan, down: COLORS.cyanDown };
@@ -296,9 +340,10 @@
       const pad = (opts && opts.padAfter) || 0;
       if (pad && pattern.length) {
         const lastT = pattern[pattern.length - 1].t;
-        const step = Atlas.inferBarStep(pattern);
+        const step = alignIndex ? INDEX_STEP : Atlas.inferBarStep(pattern);
+        const usePadBD = alignIndex ? false : useBD;
         for (let i = 1; i <= pad; i++) {
-          data.push({ time: asTime(lastT + step * i, useBD) });
+          data.push({ time: asTime(lastT + step * i, usePadBD) });
         }
       }
       sPat.setData(data);
@@ -333,9 +378,11 @@
     if (closePat || closeFol) markCloseOnly(el);
 
     chart.timeScale().fitContent();
-    if (hasFollow && follow[0] && follow[0].t != null) {
-      attachSeparator(chart, el, asTime(follow[0].t, useBD));
-    }
+    const sepTime = (hasFollow && follow[0] && follow[0].t != null)
+      ? asTime(follow[0].t, alignIndex ? false : useBD)
+      : (alignIndex && pattern.length ? pattern[pattern.length - 1].t : null);
+    const sepLabel = (opts && opts.sepLabel) || (hasFollow ? "此后" : (alignIndex ? "对照点" : null));
+    if (sepTime != null && sepLabel) attachSeparator(chart, el, sepTime, sepLabel);
     return chart;
   }
 

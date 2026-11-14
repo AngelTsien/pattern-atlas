@@ -10,11 +10,108 @@
     continuation_bull: "bull",
   };
 
-  function loadAtlas(url) {
+  function fetchJson(url) {
     return fetch(url, { cache: "no-store" }).then((r) => {
       if (!r.ok) throw new Error("无法载入数据 (" + r.status + ")");
       return r.json();
     });
+  }
+
+  function expandBar(b) {
+    if (!b) return b;
+    if (Array.isArray(b)) {
+      const o = { t: b[0], c: b[4] };
+      if (b[1] != null) o.o = b[1];
+      if (b[2] != null) o.h = b[2];
+      if (b[3] != null) o.l = b[3];
+      if (b.length > 5 && b[5] != null) o.v = b[5];
+      return o;
+    }
+    return b;
+  }
+
+  function expandBars(arr) {
+    return (arr || []).map(expandBar);
+  }
+
+  function expandCurrent(c) {
+    const o = Object.assign({}, c, { bars: expandBars(c.bars) });
+    if (o.windows) {
+      o.windows = o.windows.map((w) => Object.assign({}, w, { bars: expandBars(w.bars) }));
+    }
+    return o;
+  }
+
+  function indexPatterns(atlas) {
+    atlas._patternById = {};
+    atlas._loadedTypes = atlas._loadedTypes || {};
+    (atlas.patterns || []).forEach((p) => { atlas._patternById[p.id] = p; });
+  }
+
+  function prepareAtlas(data) {
+    const atlas = data || {};
+    atlas.current = (atlas.current || []).map(expandCurrent);
+    atlas._loadedTypes = {};
+    const hasBars = (atlas.patterns || []).some((p) => p.bars && p.bars.length);
+    if (hasBars) {
+      (atlas.patterns || []).forEach((p) => {
+        p.bars = expandBars(p.bars);
+        p.follow_bars = expandBars(p.follow_bars);
+        if (p.pattern_type) atlas._loadedTypes[p.pattern_type] = true;
+      });
+    }
+    indexPatterns(atlas);
+    return atlas;
+  }
+
+  function loadAtlas(url) {
+    const primary = url || "./data/index.json";
+    return fetchJson(primary).catch((err) => {
+      if (primary.indexOf("index.json") >= 0) return fetchJson("./data/atlas.json");
+      throw err;
+    }).then(prepareAtlas);
+  }
+
+  function shardUrl(atlas, type) {
+    const shards = (atlas.meta && atlas.meta.shards) || {};
+    return shards[type] || ("./data/shards/" + type + ".json");
+  }
+
+  function ensureTypes(atlas, types) {
+    const need = [];
+    const seen = {};
+    (types || []).forEach((t) => {
+      if (t && t !== "*" && !atlas._loadedTypes[t] && !seen[t]) {
+        seen[t] = true;
+        need.push(t);
+      }
+    });
+    if (!need.length) return Promise.resolve(atlas);
+    return Promise.all(need.map((t) => fetchJson(shardUrl(atlas, t)).then((data) => {
+      (data.patterns || []).forEach((sp) => {
+        const rec = (atlas._patternById && atlas._patternById[sp.id]) || sp;
+        rec.bars = expandBars(sp.bars);
+        rec.follow_bars = expandBars(sp.follow_bars);
+        if (!atlas._patternById[sp.id]) {
+          atlas.patterns = atlas.patterns || [];
+          atlas.patterns.push(rec);
+          atlas._patternById[sp.id] = rec;
+        }
+      });
+      atlas._loadedTypes[t] = true;
+    }).catch((err) => {
+      console.warn("shard failed", t, err);
+      atlas._loadedTypes[t] = "error";
+    }))).then(() => atlas);
+  }
+
+  function ensurePatternIds(atlas, ids) {
+    const types = [];
+    (ids || []).forEach((id) => {
+      const pat = getPattern(atlas, id);
+      if (pat && pat.pattern_type && !(pat.bars && pat.bars.length)) types.push(pat.pattern_type);
+    });
+    return ensureTypes(atlas, types);
   }
 
   function isExample(atlas) {
@@ -293,6 +390,9 @@
   global.Atlas = {
     HORIZONS,
     loadAtlas,
+    ensureTypes,
+    ensurePatternIds,
+    expandBars,
     isExample,
     instById,
     tfById,

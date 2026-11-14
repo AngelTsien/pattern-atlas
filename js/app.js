@@ -40,11 +40,14 @@
     query = query || {};
     const origin = query.origin === "match" ? "match" : "library";
     const type = query.type || defaultCatalogType(atlas);
+    const sort = query.sort || "end-desc";
+    state.catalogSort = sort;
     return {
       instrument: query.instrument || "*",
       timeframe: query.timeframe || "*",
       type: type,
       origin: origin,
+      sort: sort,
     };
   }
 
@@ -54,6 +57,7 @@
     if (filters.timeframe && filters.timeframe !== "*") p.set("timeframe", filters.timeframe);
     if (filters.type) p.set("type", filters.type);
     if (filters.origin && filters.origin !== "library") p.set("origin", filters.origin);
+    if (filters.sort && filters.sort !== "end-desc") p.set("sort", filters.sort);
     const s = p.toString();
     return "#/catalog" + (s ? "?" + s : "");
   }
@@ -64,7 +68,7 @@
       if (filters.origin === "match") return pat.origin === "match";
       return true;
     }).slice();
-    const sort = state.catalogSort || "end-desc";
+    const sort = (filters && filters.sort) || state.catalogSort || "end-desc";
     list.sort((a, b) => {
       if (sort === "end-asc") return (a.end || 0) - (b.end || 0);
       if (sort === "ret20-asc") return ((a.returns && a.returns["20"]) || 0) - ((b.returns && b.returns["20"]) || 0);
@@ -74,7 +78,116 @@
     });
     return list;
   }
-  function detailHref(id) { return "#/detail/" + encodeURIComponent(id); }
+
+  function populatedTimeframes(atlas) {
+    return (atlas.timeframes || []).filter((t) => Atlas.patternsFor(atlas, { timeframe: t.id }).length > 0);
+  }
+
+  function homeHref(q) {
+    q = q || {};
+    const p = new URLSearchParams();
+    if (q.instrument) p.set("instrument", q.instrument);
+    if (q.timeframe) p.set("timeframe", q.timeframe);
+    if (q.window) p.set("window", String(q.window));
+    if (q.mode && q.mode !== "pair") p.set("mode", q.mode);
+    const s = p.toString();
+    return "#/" + (s ? "?" + s : "");
+  }
+
+  function resembleHref(q) {
+    const p = new URLSearchParams();
+    if (q.instrument) p.set("instrument", q.instrument);
+    if (q.timeframe) p.set("timeframe", q.timeframe);
+    const s = p.toString();
+    return "#/resemble" + (s ? "?" + s : "");
+  }
+
+  function detailHref(id, ctx) {
+    ctx = ctx || state.linkCtx || {};
+    const p = new URLSearchParams();
+    if (ctx.from) p.set("from", ctx.from);
+    if (ctx.instrument && ctx.instrument !== "*") p.set("instrument", ctx.instrument);
+    if (ctx.timeframe && ctx.timeframe !== "*") p.set("timeframe", ctx.timeframe);
+    if (ctx.type) p.set("type", ctx.type);
+    if (ctx.origin) p.set("origin", ctx.origin);
+    if (ctx.sort && ctx.sort !== "end-desc") p.set("sort", ctx.sort);
+    if (ctx.window) p.set("window", String(ctx.window));
+    if (ctx.mode && ctx.mode !== "pair") p.set("mode", ctx.mode);
+    if (ctx.norm || state.detailNorm) p.set("norm", "1");
+    const s = p.toString();
+    return "#/detail/" + encodeURIComponent(id) + (s ? "?" + s : "");
+  }
+
+  function applyHomeQuery(atlas, query) {
+    query = query || {};
+    state.homeMode = query.mode === "overlay" ? "overlay" : "pair";
+    const insts = Atlas.primaryInstruments(atlas).map((i) => i.id);
+    if (query.instrument && insts.indexOf(query.instrument) >= 0) {
+      if (query.timeframe && Atlas.getCurrent(atlas, query.instrument, query.timeframe)) {
+        state.tfByInst[query.instrument] = query.timeframe;
+      }
+      const tf = state.tfByInst[query.instrument] || query.timeframe;
+      if (query.window && tf) state.winByKey[winKey(query.instrument, tf)] = Number(query.window);
+    } else if (query.timeframe) {
+      insts.forEach((id) => {
+        if (Atlas.getCurrent(atlas, id, query.timeframe)) state.tfByInst[id] = query.timeframe;
+      });
+    }
+  }
+
+  function forecastNote() {
+    return '<p class="note-forecast">此后走势与涨跌比例来自历史样本，<strong>不是预测</strong>。</p>';
+  }
+
+  function detailNav(atlas, id, query) {
+    query = query || {};
+    const pat = Atlas.getPattern(atlas, id);
+    if (pat && query.from !== "home") {
+      if (!query.type) query = Object.assign({}, query, { type: pat.pattern_type });
+      if (!query.origin) query = Object.assign({}, query, { origin: pat.origin === "match" ? "match" : "library" });
+    }
+    let list = [];
+    let backHref = "#/catalog";
+    let backLabel = "返回分类";
+    if (query.from === "home") {
+      const tf = query.timeframe || (query.instrument ? defaultTf(atlas, query.instrument) : "");
+      if (query.window && query.instrument && tf) state.winByKey[winKey(query.instrument, tf)] = Number(query.window);
+      const cur = query.instrument && tf ? viewFor(atlas, query.instrument, tf) : null;
+      list = ((cur && cur.matches) || []).map((m) => m.pattern_id).filter(Boolean);
+      backHref = homeHref({ instrument: query.instrument, timeframe: tf, window: query.window, mode: query.mode || state.homeMode });
+      backLabel = "返回当前走势";
+    } else if (query.from === "resemble") {
+      backHref = resembleHref({ instrument: query.instrument, timeframe: query.timeframe });
+      backLabel = "返回最像哪类";
+      const filters = catalogFilters(atlas, Object.assign({}, query, { origin: query.origin || "library" }));
+      list = catalogList(atlas, filters).map((p) => p.id);
+    } else {
+      const filters = catalogFilters(atlas, query);
+      list = catalogList(atlas, filters).map((p) => p.id);
+      backHref = catalogHref(filters);
+    }
+    const idx = list.indexOf(id);
+    const ctx = {
+      from: query.from || "catalog",
+      instrument: query.instrument,
+      timeframe: query.timeframe,
+      type: query.type,
+      origin: query.origin,
+      sort: query.sort,
+      window: query.window,
+      mode: query.mode,
+      norm: query.norm === "1" || state.detailNorm,
+    };
+    return {
+      idx: idx,
+      total: list.length,
+      backHref: backHref,
+      backLabel: backLabel,
+      ctx: ctx,
+      prev: idx > 0 ? list[idx - 1] : null,
+      next: idx >= 0 && idx < list.length - 1 ? list[idx + 1] : null,
+    };
+  }
 
   function setNav(page) {
     qsa("[data-nav]").forEach((a) => {
@@ -147,19 +260,23 @@
       const parts = spec.split(":");
       const kind = parts[0];
       Charts.watch(el, function (node) {
-        node.innerHTML = "";
         if (kind === "current") {
           const inst = parts[1], tf = parts[2];
           const cur = viewFor(atlas, inst, tf);
-          const best = cur && (cur.matches || [])[0];
+          if (!cur || !cur.bars || !cur.bars.length) return null;
+          const best = (cur.matches || [])[0];
           const pat = best && Atlas.getPattern(atlas, best.pattern_id);
           const pad = pat && pat.follow_bars ? pat.follow_bars.length : 0;
+          const pairAlign = page === "home" && state.homeMode !== "overlay";
+          node.innerHTML = "";
           return Charts.createCandleChart(node, {
-            bars: cur && cur.bars,
+            bars: cur.bars,
             followBars: [],
             interactive: true,
             currentOnly: true,
-            padAfter: pad,
+            padAfter: pairAlign ? pad : 0,
+            alignIndex: pairAlign,
+            sepLabel: pairAlign ? "对照点" : null,
           });
         }
         if (kind === "overlay") {
@@ -167,7 +284,8 @@
           const cur = viewFor(atlas, inst, tf);
           const best = cur && (cur.matches || [])[0];
           const pat = best && Atlas.getPattern(atlas, best.pattern_id);
-          if (!cur || !pat) return null;
+          if (!cur || !pat || !pat.bars || !pat.bars.length) return null;
+          node.innerHTML = "";
           return Charts.createOverlayCandleChart(node, {
             currentBars: cur.bars,
             histBars: pat.bars,
@@ -177,17 +295,21 @@
         }
         if (kind === "match" || kind === "thumb") {
           const pat = Atlas.getPattern(atlas, parts.slice(1).join(":"));
-          if (!pat) return null;
+          if (!pat || !pat.bars || !pat.bars.length) return null;
+          node.innerHTML = "";
           return Charts.createCandleChart(node, {
             bars: pat.bars,
             followBars: pat.follow_bars,
             interactive: kind === "match",
+            alignIndex: kind === "match" && page === "home",
+            sepLabel: kind === "match" ? "此后" : null,
           });
         }
         if (kind === "detail") {
           const pat = Atlas.getPattern(atlas, parts.slice(1).join(":"));
-          if (!pat) return null;
+          if (!pat || !pat.bars || !pat.bars.length) return null;
           const tf = pat.timeframe;
+          node.innerHTML = "";
           return Charts.createCandleChart(node, {
             bars: pat.bars,
             followBars: pat.follow_bars,
@@ -272,19 +394,19 @@
             '<div class="stat-block"><h3>相似度</h3><div class="score">' + Atlas.simPct(best.similarity) + "<small>%</small></div></div>" +
             "<div>" + kindBadge(atlas, pat.pattern_type, pat.type_name) + "</div>" +
             '<div class="rets">' + retCells(pat.returns || best.returns) + "</div>" +
-            '<a class="link-btn" href="' + detailHref(pat.id) + '">打开这条 K 线</a>' +
+            '<a class="link-btn" href="' + detailHref(pat.id, { from: "home", instrument: inst.id, timeframe: tf, window: cur.window, mode: state.homeMode }) + '">打开这条 K 线</a>' +
           "</div>")
         : '<p class="muted">尚未找到相似的历史形态。</p>';
 
       const more = rest.length
         ? ('<h3 class="section-title tight">其他接近的匹配</h3>' +
-          '<div class="candle-grid">' + rest.map((m) => thumbCard(atlas, m, true)).join("") + "</div>")
+          '<div class="candle-grid">' + rest.map((m) => thumbCard(atlas, m, true, { from: "home", instrument: inst.id, timeframe: tf, window: cur.window, mode: state.homeMode })).join("") + "</div>")
         : "";
 
       const nearest = (cur.nearest_types || []).slice(0, 3);
       const nearHtml = nearest.length
         ? '<p class="meta-line">当前更接近：' + nearest.map((n) => escapeHtml(n.name || n.pattern_type)).join("、") +
-          ' · <a href="#/resemble">查看最像哪一类</a></p>'
+          ' · <a href="' + resembleHref({ instrument: inst.id, timeframe: tf }) + '">查看最像哪一类</a></p>'
         : "";
 
       return (
@@ -311,18 +433,24 @@
           '<button type="button" class="pill' + (state.homeMode === "overlay" ? " active" : "") + '" data-home-mode="overlay">叠加归一化</button>' +
           '<a class="link-btn" href="#/resemble">当前最像哪一类</a>' +
         "</div>" +
+        forecastNote() +
       "</section>" +
       (blocks || '<p class="empty">还没有当前走势数据。</p>');
 
     scheduleCharts(atlas, "home");
+    const focus = parseHash().query.instrument;
+    if (focus) {
+      const block = document.querySelector('[data-inst-block="' + focus + '"]');
+      if (block && block.scrollIntoView) block.scrollIntoView({ block: "start", behavior: "instant" });
+    }
   }
 
-  function thumbCard(atlas, matchOrPattern, isMatch) {
+  function thumbCard(atlas, matchOrPattern, isMatch, ctx) {
     const pat = isMatch ? Atlas.getPattern(atlas, matchOrPattern.pattern_id) : matchOrPattern;
     if (!pat) return "";
     const sim = isMatch ? matchOrPattern.similarity : null;
     return (
-      '<a class="thumb-card" href="' + detailHref(pat.id) + '">' +
+      '<a class="thumb-card" href="' + detailHref(pat.id, ctx) + '">' +
         '<div class="chart-box thumb">' + host("thumb", "thumb:" + pat.id) + "</div>" +
         '<div class="thumb-info">' +
           '<div class="thumb-title">' + escapeHtml(Atlas.patternTypeName(atlas, pat)) +
@@ -415,12 +543,13 @@
         '<p class="kicker">形态分类</p>' +
         " <h1>一次只看一种形态</h1>" +
         '<p class="lede">先选形态，再在「典型样本」和「当前匹配」之间切换。每屏只加载一部分 K 线，可继续往下加载。只有收盘价的样本会画成折线，并标「仅收盘价」。</p>' +
+        forecastNote() +
       "</section>" +
       '<div class="filters">' +
         '<div class="filter-row type-switch"><span class="lbl">形态</span><div class="pills">' + chips(atlas.pattern_types || [], "type", filters.type, "全部") + "</div></div>" +
         '<div class="tabs" role="tablist" aria-label="样本来源">' + originTabs(filters) + "</div>" +
         '<div class="filter-row"><span class="lbl">品种</span><div class="pills">' + chips(insts, "instrument", filters.instrument, "全部") + "</div></div>" +
-        '<div class="filter-row"><span class="lbl">周期</span><div class="pills">' + chips(atlas.timeframes || [], "timeframe", filters.timeframe, "全部") + "</div></div>" +
+        '<div class="filter-row"><span class="lbl">周期</span><div class="pills">' + chips(populatedTimeframes(atlas), "timeframe", filters.timeframe, "全部") + "</div></div>" +
         '<div class="filter-row sort-row"><label class="lbl" for="catalog-sort">排序</label>' +
           '<select id="catalog-sort" class="sort-select" data-catalog-sort>' +
             '<option value="end-desc"' + (state.catalogSort === "end-desc" ? " selected" : "") + ">时间新到旧</option>" +
@@ -432,7 +561,7 @@
       "</div>" +
       '<h2 class="section-title">' + escapeHtml(title) + "</h2>" +
       (list.length
-        ? '<div class="candle-grid catalog">' + list.slice(0, shown).map((pat) => thumbCard(atlas, pat, false)).join("") + "</div>" +
+        ? '<div class="candle-grid catalog">' + list.slice(0, shown).map((pat) => thumbCard(atlas, pat, false, Object.assign({ from: "catalog" }, filters))).join("") + "</div>" +
           loadMoreBar(shown, list.length)
         : '<p class="empty">这个筛选条件下没有样本。</p>') +
       statsDetails(atlas, filters);
@@ -485,25 +614,37 @@
   }
 
   /* ---------- detail ---------- */
-  function renderDetail(atlas, id) {
+  function renderDetail(atlas, id, query) {
     const el = $app();
+    query = query || {};
+    if (query.norm === "1") state.detailNorm = true;
+    if (query.norm === "0") state.detailNorm = false;
     const p = Atlas.getPattern(atlas, id);
     if (!p) {
       el.innerHTML = '<p class="empty">找不到这条形态。可能数据已更新。<a href="#/catalog">返回分类</a></p>';
       return;
     }
+    const nav = detailNav(atlas, id, query);
+    state.linkCtx = nav.ctx;
     const st = Atlas.getStats(atlas, p.instrument, p.timeframe, p.pattern_type);
     const mean20 = st && st.horizons && st.horizons["20"] && st.horizons["20"].mean;
     const up20 = st && st.horizons && st.horizons["20"] && st.horizons["20"].up_pct;
 
     el.innerHTML =
       '<section class="detail-head">' +
-        '<p class="crumb"><a href="#/catalog">形态分类</a> / ' +
-          '<a href="' + catalogHref({ instrument: p.instrument, timeframe: p.timeframe, type: p.pattern_type }) + '">' +
+        '<p class="crumb"><a href="' + nav.backHref + '">' + escapeHtml(nav.backLabel) + "</a> / " +
+          '<a href="' + catalogHref({ instrument: p.instrument, timeframe: p.timeframe, type: p.pattern_type, origin: query.origin, sort: query.sort }) + '">' +
           escapeHtml(Atlas.patternTypeName(atlas, p)) + "</a></p>" +
+        '<div class="detail-nav">' +
+          '<a class="link-btn" href="' + nav.backHref + '">' + escapeHtml(nav.backLabel) + "</a>" +
+          (nav.prev ? '<a class="link-btn" href="' + detailHref(nav.prev, nav.ctx) + '">上一条</a>' : '<span class="link-btn disabled">上一条</span>') +
+          (nav.total ? '<span class="page-pos">' + (nav.idx >= 0 ? (nav.idx + 1) : "—") + " / " + nav.total + "</span>" : "") +
+          (nav.next ? '<a class="link-btn" href="' + detailHref(nav.next, nav.ctx) + '">下一条</a>' : '<span class="link-btn disabled">下一条</span>') +
+        "</div>" +
         '<h1 class="page-title">' + escapeHtml(Atlas.patternTypeName(atlas, p)) + " · " +
           escapeHtml(Atlas.instFullName(atlas, p.instrument)) + " · " + escapeHtml(Atlas.tfName(atlas, p.timeframe)) + "</h1>" +
         '<p class="sub">' + Atlas.fmtDateRange(p.start, p.end, p.timeframe) + "（罗马时间）。青色为形态段，金色为对照点之后。可捏合缩放、拖动。</p>" +
+        forecastNote() +
         '<div class="toolbar" role="group" aria-label="价格坐标">' +
           '<button type="button" class="pill' + (!state.detailNorm ? " active" : "") + '" data-detail-norm="0">原始价格</button>' +
           '<button type="button" class="pill' + (state.detailNorm ? " active" : "") + '" data-detail-norm="1">相对形态结束</button>' +
@@ -602,7 +743,7 @@
           "</p>" +
           '<div class="rets">' + retHtml + "</div>" +
           (thumbs.length
-            ? '<div class="candle-grid compact">' + thumbs.map((pat) => thumbCard(atlas, pat, false)).join("") + "</div>"
+            ? '<div class="candle-grid compact">' + thumbs.map((pat) => thumbCard(atlas, pat, false, { from: "resemble", instrument: inst.id, timeframe: tf, type: nt.pattern_type, origin: "library" })).join("") + "</div>"
             : '<p class="muted">还没有可展示的典型 K 线。</p>') +
         "</article>"
       );
@@ -613,6 +754,7 @@
         '<p class="kicker">当前最像哪一类</p>' +
         "<h1>此刻的窗口，更接近哪些形态</h1>" +
         '<p class="lede">综合接近度结合了与该类质心的相关、历史匹配里该类的占比，以及规则是否在本窗口命中。下面的 5 / 10 / 20 根统计来自该类型的历史样本，不是对当前行情的预测。</p>' +
+        forecastNote() +
       "</section>" +
       '<div class="filters">' +
         '<div class="filter-row"><span class="lbl">品种</span><div class="pills">' + instPills + "</div></div>" +
@@ -628,22 +770,71 @@
     if (Charts.mountAll) Charts.mountAll();
   }
 
+  function typesForRoute(atlas, route) {
+    if (route.page === "detail") {
+      const pat = Atlas.getPattern(atlas, route.id);
+      return pat && pat.pattern_type ? [pat.pattern_type] : [];
+    }
+    if (route.page === "catalog") {
+      const f = catalogFilters(atlas, route.query);
+      if (f.type && f.type !== "*") return [f.type];
+      const list = catalogList(atlas, f).slice(0, state.catalogLimit);
+      const types = [];
+      list.forEach((pat) => { if (pat.pattern_type && types.indexOf(pat.pattern_type) < 0) types.push(pat.pattern_type); });
+      return types;
+    }
+    if (route.page === "resemble") {
+      const insts = Atlas.primaryInstruments(atlas);
+      const instId = route.query.instrument || (insts[0] && insts[0].id);
+      const tf = route.query.timeframe || (instId ? defaultTf(atlas, instId) : "");
+      const cur = instId && tf ? viewFor(atlas, instId, tf) : null;
+      return ((cur && cur.nearest_types) || []).map((n) => n.pattern_type).filter(Boolean);
+    }
+    const types = [];
+    Atlas.primaryInstruments(atlas).forEach((inst) => {
+      const tf = defaultTf(atlas, inst.id);
+      const cur = viewFor(atlas, inst.id, tf);
+      const best = cur && (cur.matches || [])[0];
+      const pat = best && Atlas.getPattern(atlas, best.pattern_id);
+      if (pat && pat.pattern_type && types.indexOf(pat.pattern_type) < 0) types.push(pat.pattern_type);
+    });
+    return types;
+  }
+
+  function hydrateAndPaint() {
+    const atlas = state.atlas;
+    if (!atlas || !Atlas.ensureTypes) return;
+    const route = parseHash();
+    const sig = location.hash;
+    Atlas.ensureTypes(atlas, typesForRoute(atlas, route)).then(() => {
+      if (location.hash !== sig) return;
+      if (Charts.mountAll) Charts.mountAll();
+    });
+  }
+
   function render() {
     Charts.destroyAll();
     const route = parseHash();
     const atlas = state.atlas;
     if (state.error) { $app().innerHTML = '<p class="error">' + escapeHtml(state.error) + "</p>"; return; }
-    if (!atlas) { $app().innerHTML = '<p class="loading">正在载入…</p>'; return; }
+    if (!atlas) {
+      $app().innerHTML = '<div class="loading-block"><p class="loading">正在载入图库…</p><div class="chart-box home"><div class="chart-skel"></div></div></div>';
+      return;
+    }
+    if (route.query.norm === "1") state.detailNorm = true;
+    if (route.query.norm === "0") state.detailNorm = false;
+    applyHomeQuery(atlas, route.query);
     setNav(route.page);
     setBanner(Atlas.isExample(atlas));
     if (route.page === "catalog") renderCatalog(atlas, route.query);
     else if (route.page === "resemble") renderResemble(atlas, route.query);
-    else if (route.page === "detail") renderDetail(atlas, route.id);
+    else if (route.page === "detail") renderDetail(atlas, route.id, route.query);
     else renderHome(atlas);
     document.title = route.page === "catalog" ? "形态分类 · 相似图形图库"
       : route.page === "resemble" ? "当前最像哪一类 · 相似图形图库"
       : route.page === "detail" ? "形态详情 · 相似图形图库"
       : "当前走势 · 相似图形图库";
+    hydrateAndPaint();
   }
 
   document.addEventListener("click", (ev) => {
@@ -653,31 +844,35 @@
       const inst = winBtn.dataset.inst;
       const tf = state.tfByInst[inst] || defaultTf(state.atlas, inst);
       state.winByKey[winKey(inst, tf)] = Number(winBtn.dataset.win);
-      Charts.destroyAll();
-      renderHome(state.atlas);
+      location.hash = homeHref({ instrument: inst, timeframe: tf, window: winBtn.dataset.win, mode: state.homeMode }).slice(1);
       return;
     }
     const pill = ev.target.closest(".pill[data-tf][data-inst]");
     if (pill && state.atlas) {
       ev.preventDefault();
       state.tfByInst[pill.dataset.inst] = pill.dataset.tf;
-      Charts.destroyAll();
-      renderHome(state.atlas);
+      const cur = viewFor(state.atlas, pill.dataset.inst, pill.dataset.tf);
+      location.hash = homeHref({ instrument: pill.dataset.inst, timeframe: pill.dataset.tf, window: cur && cur.window, mode: state.homeMode }).slice(1);
       return;
     }
     const homeMode = ev.target.closest("[data-home-mode]");
     if (homeMode && state.atlas) {
       ev.preventDefault();
       state.homeMode = homeMode.dataset.homeMode;
-      Charts.destroyAll();
-      renderHome(state.atlas);
+      const q = parseHash().query;
+      const inst = q.instrument || (Atlas.primaryInstruments(state.atlas)[0] && Atlas.primaryInstruments(state.atlas)[0].id);
+      const tf = inst ? (state.tfByInst[inst] || defaultTf(state.atlas, inst)) : q.timeframe;
+      const cur = inst && tf ? viewFor(state.atlas, inst, tf) : null;
+      location.hash = homeHref({ instrument: inst, timeframe: tf, window: cur && cur.window, mode: state.homeMode }).slice(1);
       return;
     }
     const dnorm = ev.target.closest("[data-detail-norm]");
     if (dnorm && state.atlas) {
       ev.preventDefault();
       state.detailNorm = dnorm.dataset.detailNorm === "1";
-      render();
+      const route = parseHash();
+      const ctx = Object.assign({}, state.linkCtx || route.query, { norm: state.detailNorm });
+      location.hash = detailHref(route.id, ctx).slice(1);
       return;
     }
     const more = ev.target.closest("[data-load-more]");
@@ -690,7 +885,8 @@
       state.catalogLimit += PAGE_SIZE;
       const next = list.slice(from, state.catalogLimit);
       const grid = qs(".candle-grid.catalog");
-      if (grid && next.length) grid.insertAdjacentHTML("beforeend", next.map((pat) => thumbCard(state.atlas, pat, false)).join(""));
+      const ctx = Object.assign({ from: "catalog" }, filters);
+      if (grid && next.length) grid.insertAdjacentHTML("beforeend", next.map((pat) => thumbCard(state.atlas, pat, false, ctx)).join(""));
       const bar = qs(".load-more-wrap, .page-cap");
       const html = loadMoreBar(Math.min(state.catalogLimit, list.length), list.length);
       if (bar && bar.parentNode) {
@@ -698,6 +894,9 @@
         wrap.outerHTML = html;
       }
       scheduleCharts(state.atlas, "catalog");
+      const types = [];
+      next.forEach((pat) => { if (pat.pattern_type && types.indexOf(pat.pattern_type) < 0) types.push(pat.pattern_type); });
+      Atlas.ensureTypes(state.atlas, types).then(() => { if (Charts.mountAll) Charts.mountAll(); });
       return;
     }
     const chip = ev.target.closest(".chip[data-f], .tab[data-f]");
@@ -712,17 +911,17 @@
   document.addEventListener("change", (ev) => {
     const sel = ev.target.closest("[data-catalog-sort]");
     if (sel && state.atlas) {
+      const route = parseHash();
+      const f = Object.assign(catalogFilters(state.atlas, route.query), { sort: sel.value });
       state.catalogSort = sel.value;
       state.catalogLimit = PAGE_SIZE;
-      const route = parseHash();
-      Charts.destroyAll();
-      renderCatalog(state.atlas, route.query);
+      location.hash = catalogHref(f).slice(1);
     }
   });
 
   window.addEventListener("hashchange", render);
 
-  Atlas.loadAtlas("./data/atlas.json")
+  Atlas.loadAtlas("./data/index.json")
     .then((atlas) => { state.atlas = atlas; render(); })
     .catch((err) => { state.error = (err && err.message) ? err.message : "载入失败"; render(); });
 })();
