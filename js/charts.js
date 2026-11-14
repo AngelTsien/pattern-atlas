@@ -47,6 +47,7 @@
     try {
       el._chart = el._factory(el);
       if (el._chart && mounted.indexOf(el) < 0) mounted.push(el);
+      if (el.getAttribute("data-sync")) trySyncKey(el.getAttribute("data-sync"));
     } catch (err) {
       console.error("chart mount failed", err);
       el.classList.add("chart-error");
@@ -83,6 +84,10 @@
     const rect = el.getBoundingClientRect();
     const vh = window.innerHeight || 800;
     if (rect.top < vh + 160 && rect.bottom > -160) mountEl(el);
+  }
+
+  function mountAll() {
+    watched.forEach((el) => mountEl(el));
   }
 
   function destroyAll() {
@@ -241,10 +246,27 @@
       }),
     }));
 
-    const pattern = (opts && opts.bars) || [];
-    const follow = (opts && opts.followBars) || [];
+    let pattern = (opts && opts.bars) || [];
+    let follow = (opts && opts.followBars) || [];
+    if (opts && opts.normalized && pattern.length && pattern[pattern.length - 1].c) {
+      const anchor = pattern[pattern.length - 1].c;
+      pattern = Atlas.rebaseToAnchor(pattern, anchor);
+      follow = Atlas.rebaseToAnchor(follow, anchor);
+    }
     const hasFollow = follow.length > 0;
     const useBD = decideBusinessDay([pattern, follow]);
+    if (opts && opts.pricePercent) {
+      chart.applyOptions({
+        localization: {
+          locale: "zh-CN",
+          priceFormatter: (v) => {
+            const n = Number(v);
+            const s = n.toFixed(Math.abs(n) >= 10 ? 1 : 2);
+            return (n > 0 ? "+" : "") + s + "%";
+          },
+        },
+      });
+    }
     const palPat = (opts && opts.currentOnly)
       ? { up: COLORS.up, down: COLORS.down }
       : { up: COLORS.cyan, down: COLORS.cyanDown };
@@ -253,8 +275,9 @@
     const closeFol = hasFollow && Atlas.isCloseOnlyBars(follow);
     const lineColorPat = (opts && opts.currentOnly) ? COLORS.up : COLORS.cyan;
 
+    let sPat;
     if (closePat) {
-      const sPat = chart.addSeries(L.LineSeries, {
+      sPat = chart.addSeries(L.LineSeries, {
         color: lineColorPat,
         lineWidth: 2,
         lastValueVisible: false,
@@ -264,17 +287,28 @@
       });
       sPat.setData(toLine(pattern, useBD));
     } else {
-      const sPat = chart.addSeries(L.CandlestickSeries, {
+      sPat = chart.addSeries(L.CandlestickSeries, {
         lastValueVisible: false,
         priceLineVisible: false,
         title: "",
       });
-      sPat.setData(toCandles(pattern, palPat, useBD));
+      const data = toCandles(pattern, palPat, useBD);
+      const pad = (opts && opts.padAfter) || 0;
+      if (pad && pattern.length) {
+        const lastT = pattern[pattern.length - 1].t;
+        const step = Atlas.inferBarStep(pattern);
+        for (let i = 1; i <= pad; i++) {
+          data.push({ time: asTime(lastT + step * i, useBD) });
+        }
+      }
+      sPat.setData(data);
     }
+    chart._mainSeries = sPat;
 
     if (hasFollow) {
+      let sFol;
       if (closeFol) {
-        const sFol = chart.addSeries(L.LineSeries, {
+        sFol = chart.addSeries(L.LineSeries, {
           color: COLORS.gold,
           lineWidth: 2,
           lastValueVisible: false,
@@ -286,13 +320,14 @@
         if (pattern.length) join.push(pattern[pattern.length - 1]);
         sFol.setData(toLine(join.concat(follow), useBD));
       } else {
-        const sFol = chart.addSeries(L.CandlestickSeries, {
+        sFol = chart.addSeries(L.CandlestickSeries, {
           lastValueVisible: false,
           priceLineVisible: false,
           title: "",
         });
         sFol.setData(toCandles(follow, palFol, useBD));
       }
+      chart._followSeries = sFol;
     }
 
     if (closePat || closeFol) markCloseOnly(el);
@@ -304,10 +339,142 @@
     return chart;
   }
 
-  global.Charts = {
+  function createOverlayCandleChart(container, opts) {
+    const L = global.LightweightCharts;
+    const el = typeof container === "string" ? document.querySelector(container) : container;
+    if (!el || !L || !opts) return null;
+    const current = opts.currentBars || [];
+    const hist = opts.histBars || [];
+    const follow = opts.followBars || [];
+    const n = Math.min(current.length, hist.length) || Math.max(current.length, hist.length);
+    if (!n) return null;
+    const cWin = Atlas.takeRight(current, n);
+    const hWin = Atlas.takeRight(hist, n);
+    const cRef = cWin[cWin.length - 1] && cWin[cWin.length - 1].c;
+    const hRef = hWin[hWin.length - 1] && hWin[hWin.length - 1].c;
+    const epoch = 1700000000;
+    const step = 86400;
+    const timesPat = [];
+    for (let i = 0; i < n; i++) timesPat.push(epoch + i * step);
+    const timesFol = [];
+    for (let i = 0; i < follow.length; i++) timesFol.push(epoch + (n + i) * step);
+    const cBars = Atlas.retargetTimes(Atlas.rebaseToAnchor(cWin, cRef), timesPat);
+    const hBars = Atlas.retargetTimes(Atlas.rebaseToAnchor(hWin, hRef), timesPat);
+    const fBars = Atlas.retargetTimes(Atlas.rebaseToAnchor(follow, hRef), timesFol);
+    const interactive = opts.interactive !== false;
+    const chart = L.createChart(el, Object.assign(baseOptions(interactive, el.clientHeight || 240), {
+      localization: {
+        locale: "zh-CN",
+        priceFormatter: (v) => {
+          const num = Number(v);
+          const s = num.toFixed(Math.abs(num) >= 10 ? 1 : 2);
+          return (num > 0 ? "+" : "") + s + "%";
+        },
+        timeFormatter: (time) => {
+          const idx = Math.round((time - epoch) / step) - (n - 1);
+          if (idx === 0) return "0";
+          return (idx > 0 ? "+" : "") + idx;
+        },
+      },
+      timeScale: Object.assign(baseOptions(interactive).timeScale, {
+        timeVisible: true,
+        tickMarkFormatter: (time) => {
+          const idx = Math.round((time - epoch) / step) - (n - 1);
+          if (idx === 0) return "0";
+          return (idx > 0 ? "+" : "") + idx;
+        },
+      }),
+    }));
+
+    const closeCur = Atlas.isCloseOnlyBars(cWin);
+    const closeHist = Atlas.isCloseOnlyBars(hWin.concat(follow));
+    const sHist = closeHist
+      ? chart.addSeries(L.LineSeries, { color: COLORS.gold, lineWidth: 2, lastValueVisible: false, priceLineVisible: false, title: "" })
+      : chart.addSeries(L.CandlestickSeries, { lastValueVisible: false, priceLineVisible: false, title: "" });
+    if (closeHist) sHist.setData(toLine(hBars.concat(fBars), false));
+    else {
+      sHist.setData(toCandles(hBars, { up: "#c4b08a", down: "#8d7350" }, false));
+      if (fBars.length) {
+        const sFol = chart.addSeries(L.CandlestickSeries, { lastValueVisible: false, priceLineVisible: false, title: "" });
+        sFol.setData(toCandles(fBars, { up: COLORS.gold, down: COLORS.goldDown }, false));
+      }
+    }
+    const sCur = closeCur
+      ? chart.addSeries(L.LineSeries, { color: COLORS.cyan, lineWidth: 2, lastValueVisible: false, priceLineVisible: false, title: "" })
+      : chart.addSeries(L.CandlestickSeries, { lastValueVisible: false, priceLineVisible: false, title: "" });
+    if (closeCur) sCur.setData(toLine(cBars, false));
+    else sCur.setData(toCandles(cBars, { up: COLORS.cyan, down: COLORS.cyanDown }, false));
+    chart._mainSeries = sCur;
+    if (closeCur || closeHist) markCloseOnly(el);
+
+    sHist.createPriceLine({
+      price: 0,
+      color: "rgba(239, 234, 224, 0.28)",
+      lineWidth: 1,
+      lineStyle: L.LineStyle.Dotted,
+      axisLabelVisible: false,
+      title: "",
+    });
+    chart.timeScale().fitContent();
+    if (timesFol.length) attachSeparator(chart, el, timesFol[0]);
+    else attachSeparator(chart, el, timesPat[timesPat.length - 1]);
+    return chart;
+  }
+
+  function syncPair(a, b) {
+    if (!a || !b || a === b) return;
+    let lock = false;
+    const onRange = (src, dst) => () => {
+      if (lock) return;
+      const r = src.timeScale().getVisibleLogicalRange();
+      if (!r) return;
+      lock = true;
+      try { dst.timeScale().setVisibleLogicalRange(r); } catch (e) { /* ignore */ }
+      lock = false;
+    };
+    a.timeScale().subscribeVisibleLogicalRangeChange(onRange(a, b));
+    b.timeScale().subscribeVisibleLogicalRangeChange(onRange(b, a));
+    const L = global.LightweightCharts;
+    const dir = (L.MismatchDirection && L.MismatchDirection.NearestLeft) || 0;
+    const onMove = (src, dst) => (param) => {
+      if (lock) return;
+      const series = dst._mainSeries;
+      if (!param || param.logical == null || !series) {
+        try { dst.clearCrosshairPosition(); } catch (e) { /* ignore */ }
+        return;
+      }
+      const pt = series.dataByIndex(Math.round(param.logical), dir);
+      if (!pt || pt.time == null) {
+        try { dst.clearCrosshairPosition(); } catch (e) { /* ignore */ }
+        return;
+      }
+      const price = pt.close != null ? pt.close : pt.value;
+      if (price == null) return;
+      lock = true;
+      try { dst.setCrosshairPosition(price, pt.time, series); } catch (e) { /* ignore */ }
+      lock = false;
+    };
+    a.subscribeCrosshairMove(onMove(a, b));
+    b.subscribeCrosshairMove(onMove(b, a));
+  }
+
+  function trySyncKey(key) {
+    if (!key) return;
+    const nodes = Array.from(document.querySelectorAll('[data-sync="' + key + '"]'));
+    const charts = nodes.map((n) => n._chart).filter(Boolean);
+    if (charts.length >= 2 && !nodes[0]._synced) {
+      syncPair(charts[0], charts[1]);
+      nodes.forEach((n) => { n._synced = true; });
+    }
+  }
+
+  global.Charts = { mountAll, 
     COLORS,
     watch,
     destroyAll,
     createCandleChart,
+    createOverlayCandleChart,
+    syncPair,
+    trySyncKey,
   };
 })(window);

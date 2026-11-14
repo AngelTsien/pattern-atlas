@@ -151,6 +151,56 @@
     return isCloseOnlyBars(all);
   }
 
+  function inferBarStep(bars) {
+    if (!bars || bars.length < 2) return 86400;
+    const ds = [];
+    for (let i = 1; i < bars.length && i < 8; i++) {
+      const d = bars[i].t - bars[i - 1].t;
+      if (d > 0) ds.push(d);
+    }
+    ds.sort((a, b) => a - b);
+    return ds.length ? ds[Math.floor(ds.length / 2)] : 86400;
+  }
+
+  function rebaseToAnchor(bars, anchorClose) {
+    if (!bars || !anchorClose) return bars || [];
+    const f = (x) => (x == null ? x : (Number(x) / anchorClose - 1) * 100);
+    return bars.map((b) => {
+      const o = { t: b.t, c: f(b.c) };
+      if (b.o != null) o.o = f(b.o);
+      if (b.h != null) o.h = f(b.h);
+      if (b.l != null) o.l = f(b.l);
+      if (b.v != null) o.v = b.v;
+      return o;
+    });
+  }
+
+  function retargetTimes(bars, times) {
+    const n = Math.min(bars.length, times.length);
+    const out = [];
+    for (let i = 0; i < n; i++) out.push(Object.assign({}, bars[i], { t: times[i] }));
+    return out;
+  }
+
+  function takeRight(arr, len) {
+    if (!arr) return [];
+    return arr.length <= len ? arr.slice() : arr.slice(arr.length - len);
+  }
+
+  function typicalSamples(atlas, { type, instrument, timeframe }, n) {
+    n = n || 3;
+    let list = patternsFor(atlas, { instrument: instrument, timeframe: timeframe, type: type })
+      .filter((p) => p.origin !== "match")
+      .sort((a, b) => (b.typicality || 0) - (a.typicality || 0));
+    if (list.length < n) {
+      const extra = patternsFor(atlas, { type: type })
+        .filter((p) => p.origin !== "match" && !list.some((x) => x.id === p.id))
+        .sort((a, b) => (b.typicality || 0) - (a.typicality || 0));
+      list = list.concat(extra);
+    }
+    return list.slice(0, n);
+  }
+
   /**
    * Build overlay series pinned at the match point (end of pattern / last current bar) = 0%.
    * Returns { current, historical, follow, nPattern, nFollow }.
@@ -264,6 +314,11 @@
     hasOHLC,
     isCloseOnlyBars,
     sampleIsCloseOnly,
+    inferBarStep,
+    rebaseToAnchor,
+    retargetTimes,
+    takeRight,
+    typicalSamples,
     overlaySeries,
     sparkValues,
     primaryInstruments,

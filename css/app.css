@@ -873,3 +873,80 @@ a.thumb-card:focus-visible .chart-box {
   border-radius: 999px;
   pointer-events: none;
 }
+
+html, body { overflow-x: hidden; max-width: 100%; }
+.app, .topbar, .filters, .hero, .card { max-width: 100%; }
+.thumb-title, .page-title, .sub, .lede { overflow-wrap: anywhere; }
+
+.pill, .chip, .tab, .nav a, .link-btn {
+  min-height: 44px;
+}
+@media (max-width: 720px) {
+  .pills, .tabs {
+    flex-wrap: nowrap;
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+    scrollbar-width: thin;
+    max-width: 100%;
+    padding-bottom: 4px;
+  }
+  .pills .pill, .pills .chip, .tab { flex: none; }
+}
+.mode-bar { margin-top: 16px; flex-wrap: wrap; }
+.sort-select {
+  appearance: none;
+  background: var(--card);
+  border: 1px solid var(--line-2);
+  color: var(--ink);
+  border-radius: 999px;
+  min-height: 44px;
+  padding: 0 14px;
+  font-size: 16px;
+  max-width: 100%;
+}
+.type-row { margin: 14px 0; }
+.type-row-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-bottom: 10px;
+}
+.rank { color: var(--faint); font-variant-numeric: tabular-nums; margin-right: 6px; }
+.score.tight { font-size: 28px; margin-right: 12px; }
+.score-line { display: flex; align-items: center; gap: 12px; margin: 8px 0; }
+.bar.tall { flex: 1; height: 10px; }
+.candle-grid.compact { margin-top: 12px; }
+.mini-current { margin-bottom: 16px; }
+@media (max-width: 420px) {
+  .brand-text small { display: none; }
+  .nav a { padding: 8px 10px; font-size: 13px; }
+  .topbar { gap: 8px; }
+}
+.chart-box.overlay, .chart-box.home.overlay { height: 240px; }
+@media (min-width: 860px) {
+  .chart-box.home.overlay { height: 300px; }
+}
+
+.brand { flex-shrink: 0; }
+.brand-text strong { white-space: nowrap; }
+@media (max-width: 480px) {
+  .brand-text strong { font-size: 14px; }
+  .brand { gap: 6px; }
+  .brand .mark { width: 24px; height: 24px; }
+}
+@media (max-width: 720px) {
+  .filter-row { flex-wrap: nowrap; min-width: 0; }
+  .filter-row .pills,
+  .pills {
+    min-width: 0;
+    flex: 1 1 auto;
+    padding-right: 20px;
+  }
+  .inst-head { flex-wrap: wrap; }
+  .inst-head h2 { flex: 1 1 100%; }
+  .inst-head .pills { flex: 1 1 auto; min-width: 0; }
+  .mini-current .chart-box.home { height: 180px; }
+  .type-row .rets { margin-top: 8px; }
+}

@@ -8,6 +8,10 @@
     winByKey: {},
     catalogLimit: 12,
     catalogKey: "",
+    catalogSort: "end-desc",
+    homeMode: "pair",
+    detailNorm: false,
+    resembleInst: "",
   };
   const PAGE_SIZE = 12;
 
@@ -22,6 +26,7 @@
     if (queryPart) new URLSearchParams(queryPart).forEach((v, k) => { query[k] = v; });
     const segs = path.split("/").filter(Boolean);
     if (segs[0] === "catalog") return { page: "catalog", query };
+    if (segs[0] === "resemble") return { page: "resemble", query };
     if (segs[0] === "detail") return { page: "detail", id: decodeURIComponent(segs.slice(1).join("/") || ""), query };
     return { page: "home", query };
   }
@@ -54,17 +59,26 @@
   }
 
   function catalogList(atlas, filters) {
-    return Atlas.patternsFor(atlas, filters).filter((pat) => {
+    const list = Atlas.patternsFor(atlas, filters).filter((pat) => {
       if (filters.origin === "library") return pat.origin !== "match";
       if (filters.origin === "match") return pat.origin === "match";
       return true;
-    }).slice().sort((a, b) => (b.end || 0) - (a.end || 0));
+    }).slice();
+    const sort = state.catalogSort || "end-desc";
+    list.sort((a, b) => {
+      if (sort === "end-asc") return (a.end || 0) - (b.end || 0);
+      if (sort === "ret20-asc") return ((a.returns && a.returns["20"]) || 0) - ((b.returns && b.returns["20"]) || 0);
+      if (sort === "ret20-desc") return ((b.returns && b.returns["20"]) || 0) - ((a.returns && a.returns["20"]) || 0);
+      if (sort === "typicality") return (b.typicality || 0) - (a.typicality || 0);
+      return (b.end || 0) - (a.end || 0);
+    });
+    return list;
   }
   function detailHref(id) { return "#/detail/" + encodeURIComponent(id); }
 
   function setNav(page) {
     qsa("[data-nav]").forEach((a) => {
-      const on = (page === "home" && a.dataset.nav === "home") || (page !== "home" && a.dataset.nav === "catalog");
+      const on = a.dataset.nav === page || (page === "detail" && a.dataset.nav === "catalog");
       a.classList.toggle("active", on);
       if (on) a.setAttribute("aria-current", "page");
       else a.removeAttribute("aria-current");
@@ -137,12 +151,38 @@
         if (kind === "current") {
           const inst = parts[1], tf = parts[2];
           const cur = viewFor(atlas, inst, tf);
-          return Charts.createCandleChart(node, { bars: cur && cur.bars, followBars: [], interactive: false, currentOnly: true });
+          const best = cur && (cur.matches || [])[0];
+          const pat = best && Atlas.getPattern(atlas, best.pattern_id);
+          const pad = pat && pat.follow_bars ? pat.follow_bars.length : 0;
+          return Charts.createCandleChart(node, {
+            bars: cur && cur.bars,
+            followBars: [],
+            interactive: true,
+            currentOnly: true,
+            padAfter: pad,
+          });
+        }
+        if (kind === "overlay") {
+          const inst = parts[1], tf = parts[2];
+          const cur = viewFor(atlas, inst, tf);
+          const best = cur && (cur.matches || [])[0];
+          const pat = best && Atlas.getPattern(atlas, best.pattern_id);
+          if (!cur || !pat) return null;
+          return Charts.createOverlayCandleChart(node, {
+            currentBars: cur.bars,
+            histBars: pat.bars,
+            followBars: pat.follow_bars,
+            interactive: true,
+          });
         }
         if (kind === "match" || kind === "thumb") {
           const pat = Atlas.getPattern(atlas, parts.slice(1).join(":"));
           if (!pat) return null;
-          return Charts.createCandleChart(node, { bars: pat.bars, followBars: pat.follow_bars, interactive: false });
+          return Charts.createCandleChart(node, {
+            bars: pat.bars,
+            followBars: pat.follow_bars,
+            interactive: kind === "match",
+          });
         }
         if (kind === "detail") {
           const pat = Atlas.getPattern(atlas, parts.slice(1).join(":"));
@@ -152,7 +192,9 @@
             bars: pat.bars,
             followBars: pat.follow_bars,
             interactive: true,
-            timeVisible: tf !== "1D" && tf !== "1W",
+            timeVisible: !state.detailNorm && tf !== "1D" && tf !== "1W",
+            normalized: state.detailNorm,
+            pricePercent: state.detailNorm,
           });
         }
         return null;
@@ -192,22 +234,40 @@
       const pat = best && Atlas.getPattern(atlas, best.pattern_id);
       const rest = (cur.matches || []).slice(1, 7);
 
+      const syncKey = inst.id + "|" + tf;
+      const overlay = state.homeMode === "overlay";
       const pair = pat
-        ? ('<div class="pair-grid">' +
-            '<div class="thumb-card current-card">' +
-              '<div class="thumb-label">当前走势</div>' +
-              '<div class="chart-box home">' + host("current", "current:" + inst.id + ":" + tf) + "</div>" +
-              '<p class="thumb-meta">' + Atlas.fmtTime(cur.bars[0].t, tf) + " → " + Atlas.fmtTime(cur.bars[cur.bars.length - 1].t, tf) +
-              " · " + cur.bars.length + " 根</p>" +
-            "</div>" +
-            '<a class="thumb-card match-card" href="' + detailHref(pat.id) + '">' +
-              '<div class="thumb-label">最相似历史</div>' +
-              '<div class="chart-box home">' + host("match", "match:" + pat.id) + "</div>" +
-              '<p class="thumb-meta">' + escapeHtml(Atlas.instName(atlas, pat.instrument)) +
-              (pat.source_symbol ? " · " + escapeHtml(pat.source_symbol) : "") +
-              " · " + Atlas.fmtDateRange(pat.start, pat.end, pat.timeframe) + "</p>" +
-            "</a>" +
-          "</div>" +
+        ? (
+          (overlay
+            ? ('<div class="thumb-label">叠加对照（对照点 = 0%）</div>' +
+               '<div class="chart-box home overlay">' +
+                 '<div class="chart-el home" data-candle="overlay:' + inst.id + ":" + tf + '"><div class="chart-skel"></div></div>' +
+               "</div>" +
+               '<div class="legend">' +
+                 '<span class="current"><i></i>当前走势</span>' +
+                 '<span class="hist"><i></i>历史形态</span>' +
+                 '<span class="follow"><i></i>历史此后</span>' +
+               "</div>")
+            : ('<div class="pair-grid">' +
+                '<div class="thumb-card current-card">' +
+                  '<div class="thumb-label">当前走势</div>' +
+                  '<div class="chart-box home">' +
+                    '<div class="chart-el home" data-candle="current:' + inst.id + ":" + tf + '" data-sync="' + syncKey + '"><div class="chart-skel"></div></div>' +
+                  "</div>" +
+                  '<p class="thumb-meta">' + Atlas.fmtTime(cur.bars[0].t, tf) + " → " + Atlas.fmtTime(cur.bars[cur.bars.length - 1].t, tf) +
+                  " · " + cur.bars.length + " 根。右侧留白是尚未发生的此后区间，与历史图对齐。</p>" +
+                "</div>" +
+                '<div class="thumb-card match-card">' +
+                  '<div class="thumb-label">最相似历史</div>' +
+                  '<div class="chart-box home">' +
+                    '<div class="chart-el home" data-candle="match:' + pat.id + '" data-sync="' + syncKey + '"><div class="chart-skel"></div></div>' +
+                  "</div>" +
+                  '<p class="thumb-meta">' + escapeHtml(Atlas.instName(atlas, pat.instrument)) +
+                  (pat.source_symbol ? " · " + escapeHtml(pat.source_symbol) : "") +
+                  " · " + Atlas.fmtDateRange(pat.start, pat.end, pat.timeframe) + "</p>" +
+                "</div>" +
+              "</div>")
+          ) +
           '<div class="pair-meta">' +
             '<div class="stat-block"><h3>相似度</h3><div class="score">' + Atlas.simPct(best.similarity) + "<small>%</small></div></div>" +
             "<div>" + kindBadge(atlas, pat.pattern_type, pat.type_name) + "</div>" +
@@ -223,7 +283,8 @@
 
       const nearest = (cur.nearest_types || []).slice(0, 3);
       const nearHtml = nearest.length
-        ? '<p class="meta-line">当前更接近：' + nearest.map((n) => escapeHtml(n.name || n.pattern_type)).join("、") + "</p>"
+        ? '<p class="meta-line">当前更接近：' + nearest.map((n) => escapeHtml(n.name || n.pattern_type)).join("、") +
+          ' · <a href="#/resemble">查看最像哪一类</a></p>'
         : "";
 
       return (
@@ -243,8 +304,13 @@
       '<section class="hero">' +
         '<p class="kicker">当前走势</p>' +
         "<h1>用 K 线对照此刻和历史上最像的一段</h1>" +
-        '<p class="lede">左侧是当前窗口的真实蜡烛图，右侧是最相似的历史片段；金色为对照点之后的走势。点进详情可以放大、拖动。</p>' +
+        '<p class="lede">并排时两图对齐对照点，缩放和十字线同步；叠加则把当前与历史归一化到对照点 = 0%。金色是历史此后走势，不是预测。</p>' +
         (asOf ? '<p class="meta-line">窗口截止 ' + Atlas.fmtTime(asOf, "1H") + "（罗马时间）</p>" : "") +
+        '<div class="toolbar mode-bar" role="group" aria-label="对照方式">' +
+          '<button type="button" class="pill' + (state.homeMode !== "overlay" ? " active" : "") + '" data-home-mode="pair">并排对照</button>' +
+          '<button type="button" class="pill' + (state.homeMode === "overlay" ? " active" : "") + '" data-home-mode="overlay">叠加归一化</button>' +
+          '<a class="link-btn" href="#/resemble">当前最像哪一类</a>' +
+        "</div>" +
       "</section>" +
       (blocks || '<p class="empty">还没有当前走势数据。</p>');
 
@@ -355,6 +421,14 @@
         '<div class="tabs" role="tablist" aria-label="样本来源">' + originTabs(filters) + "</div>" +
         '<div class="filter-row"><span class="lbl">品种</span><div class="pills">' + chips(insts, "instrument", filters.instrument, "全部") + "</div></div>" +
         '<div class="filter-row"><span class="lbl">周期</span><div class="pills">' + chips(atlas.timeframes || [], "timeframe", filters.timeframe, "全部") + "</div></div>" +
+        '<div class="filter-row sort-row"><label class="lbl" for="catalog-sort">排序</label>' +
+          '<select id="catalog-sort" class="sort-select" data-catalog-sort>' +
+            '<option value="end-desc"' + (state.catalogSort === "end-desc" ? " selected" : "") + ">时间新到旧</option>" +
+            '<option value="end-asc"' + (state.catalogSort === "end-asc" ? " selected" : "") + ">时间旧到新</option>" +
+            '<option value="ret20-asc"' + (state.catalogSort === "ret20-asc" ? " selected" : "") + ">此后 20 根从低到高</option>" +
+            '<option value="ret20-desc"' + (state.catalogSort === "ret20-desc" ? " selected" : "") + ">此后 20 根从高到低</option>" +
+            '<option value="typicality"' + (state.catalogSort === "typicality" ? " selected" : "") + ">典型度</option>" +
+          "</select></div>" +
       "</div>" +
       '<h2 class="section-title">' + escapeHtml(title) + "</h2>" +
       (list.length
@@ -430,6 +504,10 @@
         '<h1 class="page-title">' + escapeHtml(Atlas.patternTypeName(atlas, p)) + " · " +
           escapeHtml(Atlas.instFullName(atlas, p.instrument)) + " · " + escapeHtml(Atlas.tfName(atlas, p.timeframe)) + "</h1>" +
         '<p class="sub">' + Atlas.fmtDateRange(p.start, p.end, p.timeframe) + "（罗马时间）。青色为形态段，金色为对照点之后。可捏合缩放、拖动。</p>" +
+        '<div class="toolbar" role="group" aria-label="价格坐标">' +
+          '<button type="button" class="pill' + (!state.detailNorm ? " active" : "") + '" data-detail-norm="0">原始价格</button>' +
+          '<button type="button" class="pill' + (state.detailNorm ? " active" : "") + '" data-detail-norm="1">相对形态结束</button>' +
+        "</div>" +
       "</section>" +
       '<div class="chart-box tall detail">' + host("detail", "detail:" + p.id) + "</div>" +
       '<div class="legend">' +
@@ -464,6 +542,92 @@
   }
 
   /* ---------- router ---------- */
+
+  function renderResemble(atlas, query) {
+    const el = $app();
+    const insts = Atlas.primaryInstruments(atlas);
+    if (!insts.length) {
+      el.innerHTML = '<p class="empty">还没有当前窗口。</p>';
+      return;
+    }
+    const instId = query.instrument || state.resembleInst || insts[0].id;
+    state.resembleInst = instId;
+    const inst = insts.find((i) => i.id === instId) || insts[0];
+    const tfs = availableTfs(atlas, inst.id);
+    const tf = (query.timeframe && Atlas.getCurrent(atlas, inst.id, query.timeframe))
+      ? query.timeframe
+      : defaultTf(atlas, inst.id);
+    const cur = viewFor(atlas, inst.id, tf);
+    const instPills = insts.map((i) =>
+      '<a class="pill' + (i.id === inst.id ? " active" : "") + '" href="#/resemble?instrument=' + encodeURIComponent(i.id) +
+      "&timeframe=" + encodeURIComponent(tf) + '">' + escapeHtml(i.short || i.name) + "</a>"
+    ).join("");
+    const tfPills = tfs.map((titem) =>
+      '<a class="pill' + (titem.id === tf ? " active" : "") + '" href="#/resemble?instrument=' + encodeURIComponent(inst.id) +
+      "&timeframe=" + encodeURIComponent(titem.id) + '">' + escapeHtml(titem.name) + "</a>"
+    ).join("");
+
+    const types = (cur && cur.nearest_types) || [];
+    const rows = types.map((nt, idx) => {
+      const samples = Atlas.typicalSamples(atlas, { type: nt.pattern_type, instrument: inst.id, timeframe: tf }, 3);
+      const fromMatches = ((cur && cur.matches) || [])
+        .map((m) => Atlas.getPattern(atlas, m.pattern_id))
+        .filter((pat) => pat && pat.pattern_type === nt.pattern_type);
+      const seen = {};
+      const thumbs = [];
+      fromMatches.concat(samples).forEach((pat) => {
+        if (pat && !seen[pat.id] && thumbs.length < 3) { seen[pat.id] = true; thumbs.push(pat); }
+      });
+      const hz = nt.type_stats || {};
+      const retHtml = Atlas.HORIZONS.map((h) => {
+        const s = hz[String(h)] || {};
+        return '<div class="ret"><span class="h">其后 ' + h + " 根</span>" +
+          '<span class="v ' + Atlas.pctClass(s.median) + '">' + Atlas.pct(s.median) + "</span>" +
+          '<span class="h">向上 ' + (s.up_pct != null ? (s.up_pct * 100).toFixed(0) + "%" : "—") + "</span></div>";
+      }).join("");
+      const maxScore = Math.max.apply(null, types.map((x) => Number(x.score) || 0).concat([1]));
+      const barW = Math.min(100, ((Number(nt.score) || 0) / maxScore) * 100);
+      const href = catalogHref({ instrument: inst.id, timeframe: tf, type: nt.pattern_type, origin: "library" });
+      return (
+        '<article class="type-row card">' +
+          '<header class="type-row-head">' +
+            '<div><span class="rank"># ' + (idx + 1) + "</span> " + kindBadge(atlas, nt.pattern_type, nt.name) + "</div>" +
+            '<a class="link-btn" href="' + href + '">浏览此类</a>' +
+          "</header>" +
+          '<div class="score-line"><span class="score tight">' + (Number(nt.score) || 0).toFixed(2) + "</span>" +
+            '<div class="bar tall" title="综合接近度"><span style="width:' + barW.toFixed(1) + '%"></span></div></div>' +
+          '<p class="thumb-sub">质心相关 ' + (nt.centroid_corr != null ? Number(nt.centroid_corr).toFixed(2) : "—") +
+            " · 匹配占比 " + (nt.match_share != null ? (nt.match_share * 100).toFixed(0) + "%" : "—") +
+            (nt.rule_hit_windows && nt.rule_hit_windows.length ? " · 规则命中窗口 " + nt.rule_hit_windows.join("、") + " 根" : "") +
+          "</p>" +
+          '<div class="rets">' + retHtml + "</div>" +
+          (thumbs.length
+            ? '<div class="candle-grid compact">' + thumbs.map((pat) => thumbCard(atlas, pat, false)).join("") + "</div>"
+            : '<p class="muted">还没有可展示的典型 K 线。</p>') +
+        "</article>"
+      );
+    }).join("");
+
+    el.innerHTML =
+      '<section class="hero">' +
+        '<p class="kicker">当前最像哪一类</p>' +
+        "<h1>此刻的窗口，更接近哪些形态</h1>" +
+        '<p class="lede">综合接近度结合了与该类质心的相关、历史匹配里该类的占比，以及规则是否在本窗口命中。下面的 5 / 10 / 20 根统计来自该类型的历史样本，不是对当前行情的预测。</p>' +
+      "</section>" +
+      '<div class="filters">' +
+        '<div class="filter-row"><span class="lbl">品种</span><div class="pills">' + instPills + "</div></div>" +
+        '<div class="filter-row"><span class="lbl">周期</span><div class="pills">' + tfPills + "</div></div>" +
+      "</div>" +
+      (cur && cur.bars && cur.bars.length
+        ? '<div class="card mini-current"><div class="thumb-label">' + escapeHtml(inst.name) + " · " + escapeHtml(Atlas.tfName(atlas, tf)) + " 当前窗口</div>" +
+          '<div class="chart-box home">' + host("current", "current:" + inst.id + ":" + tf) + "</div></div>"
+        : "") +
+      (rows || '<p class="empty">这个品种和周期还没有类型判断。</p>');
+
+    scheduleCharts(atlas, "resemble");
+    if (Charts.mountAll) Charts.mountAll();
+  }
+
   function render() {
     Charts.destroyAll();
     const route = parseHash();
@@ -473,9 +637,11 @@
     setNav(route.page);
     setBanner(Atlas.isExample(atlas));
     if (route.page === "catalog") renderCatalog(atlas, route.query);
+    else if (route.page === "resemble") renderResemble(atlas, route.query);
     else if (route.page === "detail") renderDetail(atlas, route.id);
     else renderHome(atlas);
     document.title = route.page === "catalog" ? "形态分类 · 相似图形图库"
+      : route.page === "resemble" ? "当前最像哪一类 · 相似图形图库"
       : route.page === "detail" ? "形态详情 · 相似图形图库"
       : "当前走势 · 相似图形图库";
   }
@@ -497,6 +663,21 @@
       state.tfByInst[pill.dataset.inst] = pill.dataset.tf;
       Charts.destroyAll();
       renderHome(state.atlas);
+      return;
+    }
+    const homeMode = ev.target.closest("[data-home-mode]");
+    if (homeMode && state.atlas) {
+      ev.preventDefault();
+      state.homeMode = homeMode.dataset.homeMode;
+      Charts.destroyAll();
+      renderHome(state.atlas);
+      return;
+    }
+    const dnorm = ev.target.closest("[data-detail-norm]");
+    if (dnorm && state.atlas) {
+      ev.preventDefault();
+      state.detailNorm = dnorm.dataset.detailNorm === "1";
+      render();
       return;
     }
     const more = ev.target.closest("[data-load-more]");
@@ -525,6 +706,17 @@
       const route = parseHash();
       const f = Object.assign(catalogFilters(state.atlas, route.query), { [chip.dataset.f]: chip.dataset.v });
       location.hash = catalogHref(f).slice(1);
+    }
+  });
+
+  document.addEventListener("change", (ev) => {
+    const sel = ev.target.closest("[data-catalog-sort]");
+    if (sel && state.atlas) {
+      state.catalogSort = sel.value;
+      state.catalogLimit = PAGE_SIZE;
+      const route = parseHash();
+      Charts.destroyAll();
+      renderCatalog(state.atlas, route.query);
     }
   });
 
