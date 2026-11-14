@@ -181,6 +181,19 @@
       });
   }
 
+  function toLine(bars, useBusinessDay) {
+    return (bars || []).filter((b) => b && b.t != null && b.c != null)
+      .map((b) => ({ time: asTime(b.t, useBusinessDay), value: b.c }));
+  }
+
+  function markCloseOnly(host) {
+    if (!host || host.querySelector(".chart-close-only")) return;
+    const tag = document.createElement("div");
+    tag.className = "chart-close-only";
+    tag.textContent = "仅收盘价";
+    host.appendChild(tag);
+  }
+
   function attachSeparator(chart, host, time) {
     const line = document.createElement("div");
     line.className = "chart-sep";
@@ -236,22 +249,53 @@
       ? { up: COLORS.up, down: COLORS.down }
       : { up: COLORS.cyan, down: COLORS.cyanDown };
     const palFol = { up: COLORS.gold, down: COLORS.goldDown };
+    const closePat = Atlas.isCloseOnlyBars(pattern);
+    const closeFol = hasFollow && Atlas.isCloseOnlyBars(follow);
+    const lineColorPat = (opts && opts.currentOnly) ? COLORS.up : COLORS.cyan;
 
-    const sPat = chart.addSeries(L.CandlestickSeries, {
-      lastValueVisible: false,
-      priceLineVisible: false,
-      title: "",
-    });
-    sPat.setData(toCandles(pattern, palPat, useBD));
-
-    if (hasFollow) {
-      const sFol = chart.addSeries(L.CandlestickSeries, {
+    if (closePat) {
+      const sPat = chart.addSeries(L.LineSeries, {
+        color: lineColorPat,
+        lineWidth: 2,
+        lastValueVisible: false,
+        priceLineVisible: false,
+        crosshairMarkerRadius: 3,
+        title: "",
+      });
+      sPat.setData(toLine(pattern, useBD));
+    } else {
+      const sPat = chart.addSeries(L.CandlestickSeries, {
         lastValueVisible: false,
         priceLineVisible: false,
         title: "",
       });
-      sFol.setData(toCandles(follow, palFol, useBD));
+      sPat.setData(toCandles(pattern, palPat, useBD));
     }
+
+    if (hasFollow) {
+      if (closeFol) {
+        const sFol = chart.addSeries(L.LineSeries, {
+          color: COLORS.gold,
+          lineWidth: 2,
+          lastValueVisible: false,
+          priceLineVisible: false,
+          crosshairMarkerRadius: 3,
+          title: "",
+        });
+        const join = [];
+        if (pattern.length) join.push(pattern[pattern.length - 1]);
+        sFol.setData(toLine(join.concat(follow), useBD));
+      } else {
+        const sFol = chart.addSeries(L.CandlestickSeries, {
+          lastValueVisible: false,
+          priceLineVisible: false,
+          title: "",
+        });
+        sFol.setData(toCandles(follow, palFol, useBD));
+      }
+    }
+
+    if (closePat || closeFol) markCloseOnly(el);
 
     chart.timeScale().fitContent();
     if (hasFollow && follow[0] && follow[0].t != null) {

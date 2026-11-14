@@ -6,7 +6,10 @@
     error: null,
     tfByInst: {},
     winByKey: {},
+    catalogLimit: 12,
+    catalogKey: "",
   };
+  const PAGE_SIZE = 12;
 
   function qs(sel, root) { return (root || document).querySelector(sel); }
   function qsa(sel, root) { return Array.from((root || document).querySelectorAll(sel)); }
@@ -23,13 +26,39 @@
     return { page: "home", query };
   }
 
+  function defaultCatalogType(atlas) {
+    const types = (atlas && atlas.pattern_types) || [];
+    return types.length ? types[0].id : "*";
+  }
+
+  function catalogFilters(atlas, query) {
+    query = query || {};
+    const origin = query.origin === "match" ? "match" : "library";
+    const type = query.type || defaultCatalogType(atlas);
+    return {
+      instrument: query.instrument || "*",
+      timeframe: query.timeframe || "*",
+      type: type,
+      origin: origin,
+    };
+  }
+
   function catalogHref(filters) {
     const p = new URLSearchParams();
     if (filters.instrument && filters.instrument !== "*") p.set("instrument", filters.instrument);
     if (filters.timeframe && filters.timeframe !== "*") p.set("timeframe", filters.timeframe);
-    if (filters.type && filters.type !== "*") p.set("type", filters.type);
+    if (filters.type) p.set("type", filters.type);
+    if (filters.origin && filters.origin !== "library") p.set("origin", filters.origin);
     const s = p.toString();
     return "#/catalog" + (s ? "?" + s : "");
+  }
+
+  function catalogList(atlas, filters) {
+    return Atlas.patternsFor(atlas, filters).filter((pat) => {
+      if (filters.origin === "library") return pat.origin !== "match";
+      if (filters.origin === "match") return pat.origin === "match";
+      return true;
+    }).slice().sort((a, b) => (b.end || 0) - (a.end || 0));
   }
   function detailHref(id) { return "#/detail/" + encodeURIComponent(id); }
 
@@ -99,6 +128,7 @@
 
   function scheduleCharts(atlas, page, extra) {
     qsa("[data-candle]").forEach((el) => {
+      if (el._factory) return;
       const spec = el.getAttribute("data-candle") || "";
       const parts = spec.split(":");
       const kind = parts[0];
@@ -275,31 +305,61 @@
       '<div class="stat-mini-grid">' + rows + "</div></details>";
   }
 
+  function originTabs(filters) {
+    const items = [
+      { id: "library", name: "典型样本" },
+      { id: "match", name: "当前匹配" },
+    ];
+    return items.map((it) =>
+      '<a class="tab' + (filters.origin === it.id ? " active" : "") +
+      '" href="' + catalogHref(Object.assign({}, filters, { origin: it.id })) +
+      '" data-f="origin" data-v="' + it.id + '">' + it.name + "</a>"
+    ).join("");
+  }
+
+  function loadMoreBar(shown, total) {
+    if (total <= shown) {
+      return total ? '<p class="page-cap">已显示全部 ' + total + " 例</p>" : "";
+    }
+    return (
+      '<div class="load-more-wrap">' +
+        '<p class="page-cap">已显示 ' + shown + " / " + total + " 例</p>" +
+        '<button type="button" class="link-btn" data-load-more>加载更多</button>' +
+      "</div>"
+    );
+  }
+
   function renderCatalog(atlas, query) {
-    const filters = {
-      instrument: query.instrument || "*",
-      timeframe: query.timeframe || "*",
-      type: query.type || "*",
-    };
+    const filters = catalogFilters(atlas, query);
+    const key = [filters.instrument, filters.timeframe, filters.type, filters.origin].join("|");
+    if (state.catalogKey !== key) {
+      state.catalogKey = key;
+      state.catalogLimit = PAGE_SIZE;
+    }
     const el = $app();
     const insts = Atlas.primaryInstruments(atlas);
-    const list = Atlas.patternsFor(atlas, filters).slice().sort((a, b) => (b.end || 0) - (a.end || 0));
-    const title = (filters.type === "*" ? "全部样本" : Atlas.typeName(atlas, filters.type)) + " · " + list.length + " 例";
+    const list = catalogList(atlas, filters);
+    const shown = Math.min(state.catalogLimit, list.length);
+    const originLabel = filters.origin === "match" ? "当前匹配" : "典型样本";
+    const title = (filters.type === "*" ? "全部形态" : Atlas.typeName(atlas, filters.type)) +
+      " · " + originLabel + " · " + list.length + " 例";
 
     el.innerHTML =
       '<section class="hero">' +
         '<p class="kicker">形态分类</p>' +
-        " <h1>用 K 线浏览历史上的相似片段</h1>" +
-        '<p class="lede">每张缩略图都是真实蜡烛：青色是形态段，金色是此后 20 根。统计折叠在下方，先看图再看数字。</p>' +
+        " <h1>一次只看一种形态</h1>" +
+        '<p class="lede">先选形态，再在「典型样本」和「当前匹配」之间切换。每屏只加载一部分 K 线，可继续往下加载。只有收盘价的样本会画成折线，并标「仅收盘价」。</p>' +
       "</section>" +
       '<div class="filters">' +
+        '<div class="filter-row type-switch"><span class="lbl">形态</span><div class="pills">' + chips(atlas.pattern_types || [], "type", filters.type, "全部") + "</div></div>" +
+        '<div class="tabs" role="tablist" aria-label="样本来源">' + originTabs(filters) + "</div>" +
         '<div class="filter-row"><span class="lbl">品种</span><div class="pills">' + chips(insts, "instrument", filters.instrument, "全部") + "</div></div>" +
         '<div class="filter-row"><span class="lbl">周期</span><div class="pills">' + chips(atlas.timeframes || [], "timeframe", filters.timeframe, "全部") + "</div></div>" +
-        '<div class="filter-row"><span class="lbl">形态</span><div class="pills">' + chips(atlas.pattern_types || [], "type", filters.type, "全部") + "</div></div>" +
       "</div>" +
       '<h2 class="section-title">' + escapeHtml(title) + "</h2>" +
       (list.length
-        ? '<div class="candle-grid catalog">' + list.slice(0, 240).map((p) => thumbCard(atlas, p, false)).join("") + "</div>"
+        ? '<div class="candle-grid catalog">' + list.slice(0, shown).map((pat) => thumbCard(atlas, pat, false)).join("") + "</div>" +
+          loadMoreBar(shown, list.length)
         : '<p class="empty">这个筛选条件下没有样本。</p>') +
       statsDetails(atlas, filters);
 
@@ -439,15 +499,31 @@
       renderHome(state.atlas);
       return;
     }
-    const chip = ev.target.closest(".chip[data-f]");
-    if (chip) {
+    const more = ev.target.closest("[data-load-more]");
+    if (more && state.atlas) {
       ev.preventDefault();
       const route = parseHash();
-      const f = Object.assign({
-        instrument: route.query.instrument || "*",
-        timeframe: route.query.timeframe || "*",
-        type: route.query.type || "*",
-      }, { [chip.dataset.f]: chip.dataset.v });
+      const filters = catalogFilters(state.atlas, route.query);
+      const list = catalogList(state.atlas, filters);
+      const from = state.catalogLimit;
+      state.catalogLimit += PAGE_SIZE;
+      const next = list.slice(from, state.catalogLimit);
+      const grid = qs(".candle-grid.catalog");
+      if (grid && next.length) grid.insertAdjacentHTML("beforeend", next.map((pat) => thumbCard(state.atlas, pat, false)).join(""));
+      const bar = qs(".load-more-wrap, .page-cap");
+      const html = loadMoreBar(Math.min(state.catalogLimit, list.length), list.length);
+      if (bar && bar.parentNode) {
+        const wrap = bar.closest(".load-more-wrap") || bar;
+        wrap.outerHTML = html;
+      }
+      scheduleCharts(state.atlas, "catalog");
+      return;
+    }
+    const chip = ev.target.closest(".chip[data-f], .tab[data-f]");
+    if (chip && state.atlas) {
+      ev.preventDefault();
+      const route = parseHash();
+      const f = Object.assign(catalogFilters(state.atlas, route.query), { [chip.dataset.f]: chip.dataset.v });
       location.hash = catalogHref(f).slice(1);
     }
   });

@@ -131,6 +131,26 @@
     return Array.isArray(bars) && bars.length > 0 && bars.every((b) => b.o != null && b.h != null && b.l != null && b.c != null);
   }
 
+  function isCloseOnlyBars(bars) {
+    if (!Array.isArray(bars) || !bars.length) return false;
+    return bars.every((b) => {
+      if (b == null || b.c == null) return false;
+      const c = Number(b.c);
+      if (!Number.isFinite(c)) return false;
+      if (b.o == null && b.h == null && b.l == null) return true;
+      const o = b.o == null ? c : Number(b.o);
+      const h = b.h == null ? c : Number(b.h);
+      const l = b.l == null ? c : Number(b.l);
+      return o === c && h === c && l === c;
+    });
+  }
+
+  function sampleIsCloseOnly(pattern) {
+    if (!pattern) return false;
+    const all = (pattern.bars || []).concat(pattern.follow_bars || []);
+    return isCloseOnlyBars(all);
+  }
+
   /**
    * Build overlay series pinned at the match point (end of pattern / last current bar) = 0%.
    * Returns { current, historical, follow, nPattern, nFollow }.
@@ -242,6 +262,8 @@
     pctClass,
     simPct,
     hasOHLC,
+    isCloseOnlyBars,
+    sampleIsCloseOnly,
     overlaySeries,
     sparkValues,
     primaryInstruments,
