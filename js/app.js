@@ -27,6 +27,7 @@
     const segs = path.split("/").filter(Boolean);
     if (segs[0] === "catalog") return { page: "catalog", query };
     if (segs[0] === "resemble") return { page: "resemble", query };
+    if (segs[0] === "oos") return { page: "oos", query };
     if (segs[0] === "detail") return { page: "detail", id: decodeURIComponent(segs.slice(1).join("/") || ""), query };
     return { page: "home", query };
   }
@@ -801,6 +802,69 @@
     return types;
   }
 
+
+  // ---------- 样本外检验页 ----------
+  const OOS = { data: null, err: null, loading: false };
+  function oosHref(q) {
+    const s = Object.keys(q).filter((k) => q[k] !== "" && q[k] != null).map((k) => k + "=" + encodeURIComponent(q[k])).join("&");
+    return "#/oos" + (s ? "?" + s : "");
+  }
+  function fPct(x, d) { return x == null ? "—" : (x * 100).toFixed(d == null ? 1 : d) + "%"; }
+  function fSigned(x) { return x == null ? "—" : (x >= 0 ? "+" : "") + (x * 100).toFixed(1) + "pt"; }
+  function fP(x) { return x == null ? "—" : (x < 0.001 ? "<0.001" : x.toFixed(3)); }
+  function renderOos(atlas, query) {
+    const el = $app();
+    if (!OOS.data && !OOS.err) {
+      el.innerHTML = '<p class="loading">正在载入样本外结果…</p>';
+      if (!OOS.loading) {
+        OOS.loading = true;
+        fetch("data/oos.json", { cache: "no-store" }).then((r) => { if (!r.ok) throw new Error("无法载入 oos.json (" + r.status + ")"); return r.json(); })
+          .then((d) => { OOS.data = d; }).catch((e) => { OOS.err = String(e.message || e); })
+          .then(() => { OOS.loading = false; if (parseHash().page === "oos") render(); });
+      }
+      return;
+    }
+    if (OOS.err) { el.innerHTML = '<p class="error">' + escapeHtml(OOS.err) + "</p>"; return; }
+    const d = OOS.data, S = d.summary, M = d.meta;
+    const insts = ["NAS100", "XAUUSD", "BTC"], instName = { NAS100: "纳斯达克100", XAUUSD: "黄金", BTC: "比特币" };
+    const tfs = ["1D", "4H", "1H", "15M"];
+    const inst = query.instrument || "NAS100", tf = query.timeframe || "1D", h = Number(query.h || 20);
+    const tname = {}; (atlas.pattern_types || []).forEach((t) => { tname[t.id] = t.name; });
+    const order = (atlas.pattern_types || []).map((t) => t.id);
+    const rows = d.cells.filter((c) => c.inst === inst && c.tf === tf && c.h === h).sort((a, b) => order.indexOf(a.type) - order.indexOf(b.type));
+    const pills = (items, cur, mk, nameOf) => items.map((x) => '<a class="pill' + (String(x) === String(cur) ? " active" : "") + '" href="' + mk(x) + '">' + escapeHtml(nameOf(x)) + "</a>").join("");
+    const cell = (c) => {
+      const cls = c.te_q != null && c.te_q < 0.05 ? "oos-strong" : (c.te_p != null && c.te_p < 0.05 ? "oos-soft" : "");
+      const dir = c.dir_hyp === 1 ? "看涨" : c.dir_hyp === -1 ? "看跌" : "中性";
+      return '<tr class="' + cls + '"><td>' + escapeHtml(tname[c.type] || c.type) + '<small> ' + dir + "</small></td>" +
+        "<td>" + (c.tr_n || 0) + "</td><td>" + fSigned(c.tr_diff) + "</td><td>" + fP(c.tr_p) + "</td>" +
+        "<td>" + (c.te_n || 0) + "</td><td>" + fPct(c.te_up) + "</td><td>" + fPct(c.te_base_up) + "</td><td>" + fSigned(c.te_diff) + "</td><td>" + fP(c.te_p) + "</td><td>" + fP(c.te_q) + "</td></tr>";
+    };
+    const dataEnd = Object.keys(M.data_end || {}).map((k) => k.replace("_", " ") + "：" + M.data_end[k]).join("；");
+    el.innerHTML =
+      '<section class="oos">' +
+      "<h1>样本外检验</h1>" +
+      '<p class="meta-line">形态分类在训练期之后的“新数据”上，后续走势还成不成立。生成于 ' + escapeHtml(String(d.generated_at || "").slice(0, 16).replace("T", " ")) + "（罗马时间）。</p>" +
+      '<div class="oos-sum">' +
+      "<p><strong>结论：没有任何一类形态在样本外通过多重检验校正。</strong>" +
+      "共 " + S.n_cells_test + " 个测试单元（品种×周期×形态×5/20 根），未校正 p&lt;0.05 的有 " + S.n_test_sig_p05_raw + " 个（纯随机下期望约 " + S.expected_by_chance_raw + " 个）；" +
+      "做 Benjamini–Hochberg 校正后（q&lt;0.05）为 <strong>" + S.n_test_sig_BH05 + " 个</strong>。</p>" +
+      "<p>对照：把形态标签随机打乱 " + S.placebo_runs + " 次，未校正显著比例平均 " + fPct(S.placebo_raw_sig_rate_mean) + "（95 分位 " + fPct(S.placebo_raw_sig_rate_p95) + "），真实标签为 " + fPct(S.real_raw_sig_rate) + "——略高于随机，说明可能有很小的真实差异，但单个单元都撑不过多重检验，也不稳定。</p>" +
+      "<p>训练期显著的 " + S.n_selected_with_test + " 个单元里，样本外方向一致的有 " + S.selected_same_sign + " 个（随机应约一半，二项检验 p=" + S.selected_sign_binom_p + "），样本外也显著（p&lt;0.05）的 " + S.selected_same_sign_and_test_p05 + " 个，校正后 " + S.selected_same_sign_and_test_BH05 + " 个。</p>" +
+      "<p>名称暗示方向的形态（看涨类应高于基准、看跌类应低于基准）：样本外 " + S.dir_hyp_hit + "/" + S.dir_hyp_cells + " 个单元方向符合，训练期 " + S.dir_hyp_hit_train + "/" + S.dir_hyp_cells_train + "，都低于一半——并不是“按名字走”，反而略偏反向，但单元之间高度重叠、不独立，只能当作弱线索。</p>" +
+      "<p>训练与测试期“相对基准的超额”相关系数 " + S.corr_train_test_diff + "（n=" + S.n_both + "），即训练期强的单元在样本外几乎没有延续。</p>" +
+      "</div>" +
+      '<div class="pill-row">' + pills(insts, inst, (x) => oosHref({ instrument: x, timeframe: tf, h: h }), (x) => instName[x]) + "</div>" +
+      '<div class="pill-row">' + pills(tfs, tf, (x) => oosHref({ instrument: inst, timeframe: x, h: h }), (x) => x) +
+      pills([5, 20], h, (x) => oosHref({ instrument: inst, timeframe: tf, h: x }), (x) => "后 " + x + " 根") + "</div>" +
+      '<p class="meta-line">切分：训练期 = 形态结束于 ' + escapeHtml(M.split[tf]) + " 之前，测试期 = 之后。“超额”= 形态后上涨比例 − 同品种同周期同时期所有时点的上涨比例（已扣除长期漂移，上涨 = 后续收益 &gt; 0.05%）。n 为互不重叠样本数，少于 30 的不检验。</p>" +
+      '<div class="oos-wrap"><table class="oos-table"><thead><tr><th>形态</th><th>训练 n</th><th>训练超额</th><th>训练 p</th><th>测试 n</th><th>测试上涨率</th><th>同期基准</th><th>测试超额</th><th>测试 p</th><th>校正 q</th></tr></thead><tbody>' +
+      (rows.length ? rows.map(cell).join("") : '<tr><td colspan="10">该组合没有数据</td></tr>') + "</tbody></table></div>" +
+      '<p class="meta-line">浅色行：未校正 p&lt;0.05；深色行：校正后 q&lt;0.05（目前没有）。</p>' +
+      '<details class="oos-method"><summary>方法与局限</summary><p>' + escapeHtml(d.method || "") + "</p><p>安慰剂对照：把形态标签在测试段内随机打乱 " + (S.placebo_runs || 0) + " 次，未校正显著比例平均 " + fPct(S.placebo_raw_sig_rate_mean) + "（95 分位 " + fPct(S.placebo_raw_sig_rate_p95) + "），真实标签为 " + fPct(S.real_raw_sig_rate) + "。</p><p>数据截止：" + escapeHtml(dataEnd) + "。仅供研究，不是交易信号。</p></details>" +
+      "</section>";
+  }
+
   function hydrateAndPaint() {
     const atlas = state.atlas;
     if (!atlas || !Atlas.ensureTypes) return;
@@ -829,9 +893,11 @@
     if (route.page === "catalog") renderCatalog(atlas, route.query);
     else if (route.page === "resemble") renderResemble(atlas, route.query);
     else if (route.page === "detail") renderDetail(atlas, route.id, route.query);
+    else if (route.page === "oos") renderOos(atlas, route.query);
     else renderHome(atlas);
     document.title = route.page === "catalog" ? "形态分类 · 相似图形图库"
       : route.page === "resemble" ? "当前最像哪一类 · 相似图形图库"
+      : route.page === "oos" ? "样本外检验 · 相似图形图库"
       : route.page === "detail" ? "形态详情 · 相似图形图库"
       : "当前走势 · 相似图形图库";
     hydrateAndPaint();

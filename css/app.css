@@ -1010,3 +1010,17 @@ html, body { overflow-x: hidden; max-width: 100%; }
   min-height: 44px;
   font-size: 14px;
 }
+
+/* 样本外检验页 */
+.oos h1{font-size:1.25rem;margin:.2rem 0 .4rem}
+.oos-sum{background:var(--panel,#141a24);border:1px solid rgba(255,255,255,.08);border-radius:10px;padding:.7rem .9rem;margin:.6rem 0 1rem;line-height:1.6}
+.oos-sum p{margin:.35rem 0}
+.oos-wrap{overflow-x:auto;margin:.5rem 0}
+.oos-table{border-collapse:collapse;width:100%;min-width:640px;font-size:.85rem;font-variant-numeric:tabular-nums}
+.oos-table th,.oos-table td{padding:.35rem .5rem;text-align:right;border-bottom:1px solid rgba(255,255,255,.07);white-space:nowrap}
+.oos-table th:first-child,.oos-table td:first-child{text-align:left}
+.oos-table small{opacity:.55}
+.oos-table tr.oos-soft{background:rgba(212,175,55,.10)}
+.oos-table tr.oos-strong{background:rgba(212,175,55,.28)}
+.oos-method{margin:.8rem 0;font-size:.85rem;opacity:.9}
+.pill-row{display:flex;flex-wrap:wrap;gap:.4rem;margin:.4rem 0}
